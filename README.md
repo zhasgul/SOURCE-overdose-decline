@@ -11,8 +11,8 @@ The work uses the **SOURCE** (Simulation of Opioid Use, Response, and Consequenc
 
 | Directory | Description |
 |------------|--------------|
-| **Modeling files/** | Contains the model input data, calibration results, and configuration files for the SOURCE model. Includes Vensim model files, time series inputs, MCMC calibration outputs, and sensitivity setup files. |
-| **Analysis files and outputs/** | Contains post-calibration outputs, R scripts for MCMC result visualization, supplementary tables, and high-quality figures. |
+| **Modeling files/** | Contains Vensim model file, calibration results, and configuration files for the SOURCE model. Includes time series inputs, MCMC posterior samples, and sensitivity setup files. |
+| **Analysis files and outputs/** | Contains outputs generated from the sensitivity analysis performed using parameter sets drawn from the MCMC posterior samples using the SOURCE model. Additionally includes R scripts for MCMC result analysis and visualization, supplementary tables, and high-quality figures. |
 
 ---
 
