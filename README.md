@@ -18,7 +18,7 @@ The work uses the **SOURCE** (Simulation of Opioid Use, Response, and Consequenc
 
 ## Publication and Links
 
-*(Link to JAMA Psychiatry publication and data DOI will be inserted once production is complete.)*
-
+Stringfellow et al., *Structural Drivers of the Drop in US Opioid Overdose Deaths*, JAMA Psychiatry, 2025.  
+Link to JAMA Psychiatry publication and DOI will be inserted once production is complete.
 
 ---
