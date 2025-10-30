@@ -3,7 +3,7 @@
 This repository contains data, code, and supplementary materials for the paper  
 **“Structural Drivers of the Drop in US Opioid Overdose Deaths”**, published in *JAMA Psychiatry*.
 
-The work uses the **SOURCE** (Simulation of Opioid Use, Response, and Consequences in the United States) model to elucidate structural, socioeconomic, and behavioral factors underlying the recent decline in US opioid overdose deaths.
+The work uses the **SOURCE** (Simulation of Opioid Use, Response, and Consequences in the United States) model to elucidate factors underlying the recent decline in US overdose deaths.
 
 ---
 
