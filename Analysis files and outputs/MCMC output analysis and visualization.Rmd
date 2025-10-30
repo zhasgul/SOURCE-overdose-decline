@@ -1,0 +1,528 @@
+---
+title: "MCMC output analysis and visualization"
+author: "Zeynep Hasgul"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readxl)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(purrr)
+library(minpack.lm)
+library(scales)  
+library(patchwork)
+library(gridExtra)
+
+
+data_file_path <- "C:/Users/.../Pessimistic2020X8_perdt_data_forR.csv"
+
+sim_file_path <- "C:/Users/.../Pessimistic2020X8_perdt_simulation_forR.csv"
+
+
+
+```
+
+
+```{r}
+
+## =========================================================
+## 1) OBSERVED DATA (wide -> long). 
+## =========================================================
+data <- read.csv(data_file_path, header = TRUE, check.names = FALSE)
+names(data)[1] <- "Variable"
+
+data_long <- data %>%
+  pivot_longer(
+    cols = -Variable,
+    names_to  = "Year",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Year          = parse_number(Year),      # handles 1999 or 1999.06 or X1999
+    Value         = as.numeric(Value),
+    Type          = "data",
+    Value_lower   = NA_real_,
+    Value_median  = Value,                   # for data we only fill median
+    Value_upper   = NA_real_
+  ) %>%
+  select(Variable, Year, Type, Value_lower, Value_median, Value_upper)
+
+
+```
+
+
+```{r}
+
+## =========================================================
+## 2) SIMULATION DATA (wide T# var -> long; summarise MCMC).
+## =========================================================
+sim_data <- read.csv(sim_file_path, header = TRUE, check.names = FALSE)
+
+t0_year    <- 1999
+step_years <- 1/16   # adjust if your sim step differs (e.g., 1/52 for weekly)
+
+sim_long <- sim_data %>%
+  pivot_longer(cols = everything(), names_to = "VarFull", values_to = "Value") %>%
+  mutate(
+    Time      = str_extract(VarFull, "^T\\d+"),
+    Variable  = trimws(str_remove(VarFull, "^T\\d+\\s+")),  # "T# " removed
+    TimeIndex = as.numeric(str_remove(Time, "T")),
+    Year      = t0_year + TimeIndex * step_years,
+    Value     = as.numeric(Value)
+  )
+
+sim_summary <- sim_long %>%
+  group_by(Variable, Year) %>%
+  summarise(
+    Value_median = median(Value, na.rm = TRUE),
+    Value_lower  = quantile(Value, 0.025, na.rm = TRUE),
+    Value_upper  = quantile(Value, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(Type = "simulation") %>%
+  select(Variable, Year, Type, Value_lower, Value_median, Value_upper)
+
+## =========================================================
+## 3) MERGE FIRST, THEN CLEAN " DATA" SUFFIX FOR Type == "data".
+## =========================================================
+
+plot_table <- bind_rows(data_long, sim_summary) %>%
+  arrange(Variable, Year) %>%
+  mutate(
+    Variable = if_else(Type == "data",
+                       str_remove(Variable, " DATA$"),
+                       Variable)
+  )
+
+```
+
+
+```{r}
+
+
+## ===============================
+## RX PLOT (median + 95% ribbon)
+## ===============================
+
+
+# pick variables for this panel
+rx_vars <- c("initiation misuse", "users misuse", "users rx OUD")
+
+# build plotting df from plot_table (use median; convert to millions)
+rx_df <- plot_table %>%
+  filter(Variable %in% rx_vars) %>%
+  mutate(
+    Value = Value_median / 1e6,  # millions for y-axis
+    LegendGroup = case_when(
+      str_detect(Variable, "^initiation misuse") ~ "Rx misuse initiation",
+      str_detect(Variable, "^users misuse")      ~ "Rx misuse",
+      str_detect(Variable, "^users rx OUD")      ~ "Rx OUD",
+      TRUE                                       ~ NA_character_
+    )
+  ) %>%
+  # hold out observed data after 2020
+  filter(!(Type == "data" & Year > 2020)) %>%
+  drop_na(Value)
+
+# simulation ribbon data (95% CI in millions)
+sim_ribbons_rx <- plot_table %>%
+  filter(Type == "simulation", Variable %in% rx_vars) %>%
+  transmute(
+    Year,
+    LegendGroup = case_when(
+      str_detect(Variable, "^initiation misuse") ~ "Rx misuse initiation",
+      str_detect(Variable, "^users misuse")      ~ "Rx misuse",
+      str_detect(Variable, "^users rx OUD")      ~ "Rx OUD"
+    ),
+    lower = Value_lower / 1e6,
+    upper = Value_upper / 1e6
+  ) %>%
+  tidyr::drop_na(lower, upper)
+
+# legend order & colors
+desired_levels <- c("Rx misuse initiation","Rx misuse","Rx OUD")
+rx_df$LegendGroup <- factor(rx_df$LegendGroup, levels = desired_levels)
+sim_ribbons_rx$LegendGroup <- factor(sim_ribbons_rx$LegendGroup, levels = desired_levels)
+
+col_map_rx <- c(
+  "Rx misuse initiation" = "#4E79A7",
+  "Rx misuse"            = "#A0CBE8",
+  "Rx OUD"               = "#F28E2B"
+)
+
+# safe x breaks
+xr <- range(rx_df$Year, na.rm = TRUE)
+xbreaks <- seq(floor(xr[1]), ceiling(xr[2]), by = 3)
+
+# plot
+plot_rx <- ggplot(rx_df, aes(
+    Year, Value,
+    colour = LegendGroup,
+    group  = interaction(LegendGroup, Type)
+  )) +
+  geom_ribbon(
+    data = sim_ribbons_rx,
+    aes(x = Year, ymin = lower, ymax = upper, fill = LegendGroup),
+    alpha = 0.3, inherit.aes = FALSE
+  ) +
+  geom_line(data = subset(rx_df, Type == "simulation"), linewidth = 1) +
+  geom_point(data = subset(rx_df, Type == "data"), size = 1.5) +
+  geom_vline(xintercept = 2020, linewidth = .7) +
+  # label box next to the line
+  annotate(
+    "label",
+    x      = 2020 - 8.4 ,             # nudge right a bit
+    y      = 12*1,          # near the top of the plot
+    label  = "final year of model data",
+    angle  = 0, 
+    hjust  = 0,                       # left‑align
+    vjust  = 1,                       # top‑align
+    fill   = "white",                 # background of box
+    label.padding = unit(0.25, "lines"),
+    size   = 3.5                        # text size
+  ) +
+  scale_colour_manual(values = col_map_rx, drop = FALSE) +
+  scale_fill_manual(values = col_map_rx, drop = FALSE) +
+  guides(
+    colour = guide_legend(override.aes = list(shape = NA, linetype = 1, linewidth = 1)),
+    fill   = "none"
+  ) +
+  labs(
+    title = "A) Prescription opioid misuse initiation, misuse, and use disorder",
+    x = "Year", y = "People (millions)", colour = NULL
+  ) +
+  scale_y_continuous(
+    labels = scales::comma, limits = c(0, 12),
+    breaks = scales::pretty_breaks(6),
+    expand = expansion(mult = c(0, .02))
+  ) +
+  scale_x_continuous(breaks = xbreaks) +
+  theme_classic() +
+  theme(
+    panel.grid.major.y   = element_line(colour = "darkgrey", linewidth = .7),
+    panel.grid.major.x   = element_blank(),
+    axis.text            = element_text(size = 11),
+    legend.position      = c(1, 1),
+    legend.justification = c("right", "top"),
+    legend.background    = element_rect(fill = scales::alpha("white", .8), colour = "grey50"),
+    legend.text          = element_text(size = 9)
+  )
+
+print(plot_rx)
+
+```
+
+
+```{r}
+
+
+## ===============================
+## HEROIN PLOT (median + 95% ribbon)
+## ===============================
+
+
+# --- variables for the heroin panel ---
+heroin_vars    <- c("initiation heroin", "users NDHU", "users HUD")
+heroin_levels  <- c("Heroin initiation", "Heroin misuse", "Heroin OUD")
+
+# 1) Build plotting df from plot_table (use median; convert to millions)
+heroin_df <- plot_table %>%
+  filter(Variable %in% heroin_vars) %>%
+  mutate(
+    Year        = as.numeric(Year),
+    Value       = Value_median / 1e6,   # millions
+    LegendGroup = case_when(
+      str_detect(Variable, "^initiation heroin") ~ "Heroin initiation",
+      str_detect(Variable, "NDHU")               ~ "Heroin misuse",
+      str_detect(Variable, "HUD")                ~ "Heroin OUD",
+      TRUE                                       ~ NA_character_
+    ),
+    LegendGroup = factor(LegendGroup, levels = heroin_levels)) %>%
+  # hold out observed data after 2020
+  filter(!(Type == "data" & Year > 2020)) %>%
+  drop_na(Value)
+
+# 2) Ribbon data (simulation only; convert to millions)
+sim_ribbons_heroin <- plot_table %>%
+  filter(Type == "simulation", Variable %in% heroin_vars) %>%
+  transmute(
+    Year        = as.numeric(Year),
+    LegendGroup = case_when(
+      str_detect(Variable, "^initiation heroin") ~ "Heroin initiation",
+      str_detect(Variable, "NDHU")               ~ "Heroin misuse",
+      str_detect(Variable, "HUD")                ~ "Heroin OUD"
+    ),
+    lower = Value_lower / 1e6,
+    upper = Value_upper / 1e6
+  ) %>%
+  mutate(LegendGroup = factor(LegendGroup, levels = heroin_levels)) %>%
+  drop_na(lower, upper)
+
+# 3) Colors (your choices)
+col_map_heroin <- c(
+  "Heroin initiation" = "#4E79A7",
+  "Heroin misuse"     = "#A0CBE8",
+  "Heroin OUD"        = "#F28E2B"
+)
+
+# 4) Safe x-axis breaks
+xh <- range(heroin_df$Year, na.rm = TRUE)
+xbreaks_h <- seq(floor(xh[1]), ceiling(xh[2]), by = 3)
+
+# 5) Plot
+plot_heroin <- ggplot(heroin_df, aes(
+    Year, Value,
+    colour = LegendGroup,
+    group  = interaction(LegendGroup, Type)
+  )) +
+  # 95% CI ribbon
+  geom_ribbon(
+    data = sim_ribbons_heroin,
+    aes(x = Year, ymin = lower, ymax = upper, fill = LegendGroup),
+    alpha = 0.3, inherit.aes = FALSE
+  ) +
+  geom_line(data = subset(heroin_df, Type == "simulation"), linewidth = 1) +
+  geom_point(data = subset(heroin_df, Type == "data"), size = 1.5) +
+  geom_vline(xintercept = 2020, linewidth = .7) +
+    annotate(
+    "label",
+    x      = 2020 - 8.4,              # nudge right a bit
+    y      = 3*1,       # near the top of the plot
+    label  = "final year of model data",
+    angle  = 0, 
+    hjust  = 0,                       # left‑align
+    vjust  = 1,                       # top‑align
+    fill   = "white",                 # background of box
+    label.padding = unit(0.25, "lines"),
+    size   = 3.5                        # text size
+  ) +
+  labs(
+    title = "B) Heroin initiation, heroin misuse, and use disorder",
+    x = "Year", y = "People (millions)", colour = NULL
+  ) +
+  scale_colour_manual(values = col_map_heroin, drop = FALSE) +
+  scale_fill_manual(values = col_map_heroin, drop = FALSE) +
+  guides(
+    colour = guide_legend(override.aes = list(shape = NA, linetype = 1, linewidth = 1)),
+    fill   = "none"
+  ) +
+  scale_y_continuous(
+    labels = scales::comma, limits = c(0, 3),
+    breaks = scales::pretty_breaks(5),
+    expand = expansion(mult = c(0, .02))
+  ) +
+  scale_x_continuous(breaks = xbreaks_h) +
+  theme_classic() +
+  theme(
+    panel.grid.major.y   = element_line(colour = "darkgrey", linewidth = .7),
+    panel.grid.major.x   = element_blank(),
+    axis.text            = element_text(size = 11),
+    legend.position      = c(1, 1),
+    legend.justification = c("right", "top"),
+    legend.background    = element_rect(fill = scales::alpha("white", .8), colour = "grey50"),
+    legend.text          = element_text(size = 9)
+  )
+
+print(plot_heroin)
+
+```
+
+
+
+```{r fig.width=14, fig.height=5}
+
+
+
+
+combined1 <- plot_rx + plot_heroin 
+
+print(combined1)
+
+
+
+grid.arrange(plot_rx, plot_heroin, ncol = 2)  # simple 2‑column layout
+
+
+```
+
+
+```{r }
+
+
+ggsave("figure1_v3.svg", plot = combined1, width = 14, height = 5, units = "in", dpi = 300)
+
+
+```
+
+
+
+
+```{r}
+
+
+
+# 1) Subset from plot_table
+hazard_df <- plot_table %>%
+  filter(Variable == "hazard HUD") %>%
+  mutate(Value = Value_median)
+
+# 2) Ribbon (simulation only)
+hazard_ribbon <- plot_table %>%
+  filter(Variable == "hazard HUD", Type == "simulation") %>%
+  transmute(
+    Year,
+    lower = Value_lower,
+    upper = Value_upper
+  ) %>%
+  tidyr::drop_na(lower, upper)
+
+# 3) Plot
+plot_hazard <- ggplot(hazard_df, aes(x = Year, y = Value)) +
+  geom_ribbon(
+    data = hazard_ribbon,
+    aes(x = Year, ymin = lower, ymax = upper),
+    fill = "#4E79A7", alpha = 0.3, inherit.aes = FALSE
+  ) +
+  geom_line(color = "#4E79A7", size = 1) +
+
+  labs(
+    title = "A) Relative overdose mortality rate, heroin OUD",
+    x     = "Year",
+    y     = "Relative to initial value"
+  ) +
+
+  scale_y_continuous(
+    limits = c(0, 10),
+    labels = comma,
+    breaks = pretty_breaks(n = 4)
+  ) +
+  scale_x_continuous(
+    breaks = seq(min(hazard_df$Year, na.rm = TRUE),
+                 max(hazard_df$Year, na.rm = TRUE), by = 3)
+  ) +
+
+  coord_cartesian(ylim = c(0, 10)) +   # zoom without dropping points
+
+  theme_classic() +
+  theme(
+    panel.grid.major.y = element_line(color = "darkgrey", linetype = "solid", linewidth = 0.7),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "none",      # no legend needed for single series
+    axis.text.y        = element_text(size = 11.5),
+    axis.text.x        = element_text(size = 11)
+  )
+
+print(plot_hazard)
+
+
+```
+
+
+```{r}
+
+
+
+# 1) Build plotting df from plot_table (names already cleaned: no " DATA")
+death_df <- plot_table %>%
+  filter(Variable == "death all opioid users") %>%
+  mutate(Value = Value_median)
+
+# 2) Ribbon data (simulation only)
+death_ribbon <- plot_table %>%
+  filter(Variable == "death all opioid users", Type == "simulation") %>%
+  transmute(
+    Year,
+    lower = Value_lower,
+    upper = Value_upper
+  ) %>%
+  drop_na(lower, upper)
+
+# 3) Plot
+plot_death <- ggplot(death_df, aes(Year, Value, colour = Type)) +
+  # 95% CI ribbon for simulations
+  geom_ribbon(
+    data = death_ribbon,
+    aes(x = Year, ymin = lower, ymax = upper),
+    fill = "#4E79A7", alpha = 0.3, inherit.aes = FALSE
+  ) +
+  geom_point(data = subset(death_df, Type == "data"), size = 1.5) +
+  geom_line (data = subset(death_df, Type == "simulation"), linewidth = 1) +
+  geom_vline(xintercept = 2020, linewidth = .7) +
+  annotate(
+    "label",
+    x      = 2020 - 8.9,              # nudge right a bit
+    y      = 100000*1,       # near the top of the plot
+    label  = "final year of model data",
+    angle  = 0, 
+    hjust  = 0,                       # left‑align
+    vjust  = 1,                       # top‑align
+    fill   = "white",                 # background of box
+    label.padding = unit(0.25, "lines"),
+    size   = 3.5                        # text size
+  ) +
+  scale_colour_manual(values = c(data = "#4E79A7", simulation = "#4E79A7")) +
+  scale_y_continuous(
+    labels = comma,
+    limits = c(0, 100000),
+    breaks = pretty_breaks(5),
+    expand = expansion(mult = c(0, .02))
+  ) +
+  scale_x_continuous(
+    breaks = seq(min(death_df$Year, na.rm = TRUE),
+                 max(death_df$Year, na.rm = TRUE), 3)
+  ) +
+  labs(
+    title = "B) Total opioid overdose deaths",
+    x = "Year", y = "Number of deaths, people/year"
+  ) +
+  theme_classic() +
+  theme(
+    panel.grid.major.y = element_line(colour = "darkgrey", linewidth = .7),
+    panel.grid.major.x = element_blank(),
+    legend.position    = "none",
+    axis.text.y        = element_text(size = 11.5),
+    axis.text.x        = element_text(size = 11)
+  )
+
+print(plot_death)
+
+
+```
+
+
+```{r fig.width=14, fig.height=5}
+
+
+
+
+combined2 <- plot_hazard + plot_death 
+
+print(combined2)
+
+
+
+grid.arrange(plot_hazard,plot_death,  ncol = 2)  # simple 2‑column layout
+
+
+```
+
+
+
+
+```{r }
+
+
+ggsave("figure2_v3.svg", plot = combined2, width = 14, height = 5, units = "in", dpi = 300)
+
+
+```
+
+
+
+
